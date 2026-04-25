@@ -6,6 +6,7 @@ import warnings
 import time
 import urllib.request
 import xml.etree.ElementTree as ET
+from datetime import datetime
 
 # Try to import FinBERT libraries
 try:
@@ -24,44 +25,74 @@ def load_finbert():
     if not FINBERT_AVAILABLE: return None
     return pipeline("sentiment-analysis", model="ProsusAI/finbert")
 
-def analyze_sentiment(ticker, nlp_pipe):
-    if not nlp_pipe: return "No FinBERT ⚠️"
-    headlines = []
-    
+def matches_target(title, ticker, company_name):
+    title_lower = title.lower()
+    # Check exact ticker match
+    if ticker.lower() in title_lower.split(): return True
+    # Check first word of company name (e.g., "Apple" from "Apple Inc.")
+    company_first_word = str(company_name).split()[0].lower()
+    company_first_word = ''.join(e for e in company_first_word if e.isalnum())
+    if len(company_first_word) > 2 and company_first_word in title_lower: return True
+    return False
+
+def get_latest_news(ticker, company_name):
+    # 1. Try yfinance news first
     try:
         stock = yf.Ticker(ticker)
         news = stock.news
-        time.sleep(0.5) 
         if news and isinstance(news, list):
-            headlines = [article.get('title') for article in news[:5] if isinstance(article, dict) and article.get('title')]
-    except Exception as e:
+            for article in news:
+                title = article.get('title', '')
+                if matches_target(title, ticker, company_name):
+                    link = article.get('link', '')
+                    pub_time = article.get('providerPublishTime')
+                    days_ago = int((time.time() - pub_time) // 86400) if pub_time else 0
+                    return title, link, max(0, days_ago)
+    except Exception:
         pass
 
-    if not headlines:
-        try:
-            url = f"https://news.google.com/rss/search?q={ticker}+stock+news&hl=en-US&gl=US&ceid=US:en"
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=5) as response:
-                xml_data = response.read()
-            root = ET.fromstring(xml_data)
-            for item in root.findall('.//item')[:5]:
-                title_node = item.find('title')
-                if title_node is not None and title_node.text:
-                    clean_title = title_node.text.rsplit(' - ', 1)[0][:200]
-                    headlines.append(clean_title)
-        except Exception as e:
-            pass
+    # 2. Fallback to Google News RSS
+    try:
+        url = f"https://news.google.com/rss/search?q={ticker}+stock+news&hl=en-US&gl=US&ceid=US:en"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            xml_data = response.read()
+        root = ET.fromstring(xml_data)
+        for item in root.findall('.//item'):
+            title = item.find('title').text
+            if title and matches_target(title, ticker, company_name):
+                link = item.find('link').text
+                pubDate = item.find('pubDate').text
+                try:
+                    dt = datetime.strptime(pubDate, '%a, %d %b %Y %H:%M:%S %Z')
+                    days_ago = max(0, (datetime.utcnow() - dt).days)
+                except Exception:
+                    days_ago = 0
+                return title.rsplit(' - ', 1)[0], link, days_ago
+    except Exception:
+        pass
 
-    if not headlines: return "No Headlines ⚪"
+    return None, None, None
+
+def analyze_sentiment(ticker, company_name, nlp_pipe):
+    if not nlp_pipe: return "No FinBERT ⚠️", None
+    
+    title, link, days_ago = get_latest_news(ticker, company_name)
+    if not title: return "No Recent Match ⚪", None
         
     try:
-        results = nlp_pipe(headlines)
-        score = sum([1 if res['label'] == 'positive' else -1 if res['label'] == 'negative' else 0 for res in results])
-        if score >= 1: return "Bullish 🟢"
-        elif score <= -1: return "Bearish 🔴"
-        else: return "Neutral 🟡"
+        # Run FinBERT on the single best matched headline
+        res = nlp_pipe(title)[0]
+        label = res['label']
+        
+        if label == 'positive': icon = "🟢"
+        elif label == 'negative': icon = "🔴"
+        else: icon = "🟡"
+        
+        day_str = "Today" if days_ago == 0 else f"{days_ago}d ago"
+        return f"{label.capitalize()} {icon} ({day_str})", link
     except Exception:
-        return "Error ⚪"
+        return "Error ⚪", None
 
 # ==========================================
 # 2. MARKET DATA UNIVERSE
@@ -125,43 +156,36 @@ def fetch_latest_data(tickers):
                 df.dropna(subset=['Close', 'Volume', 'High', 'Low'], inplace=True)
                 if df.empty or len(df) < 21: continue
                     
-                # Standard MAs and EMAs
                 df['ma_20'] = df['Close'].rolling(window=20, min_periods=1).mean()
                 df['ma_50'] = df['Close'].rolling(window=50, min_periods=1).mean()
                 df['ema_10'] = df['Close'].ewm(span=10, adjust=False).mean()
                 df['ema_21'] = df['Close'].ewm(span=21, adjust=False).mean()
                 
-                # MACD
                 ema_12 = df['Close'].ewm(span=12, adjust=False).mean()
                 ema_26 = df['Close'].ewm(span=26, adjust=False).mean()
                 df['macd'] = ema_12 - ema_26
                 df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
                 
-                # RSI
                 delta = df['Close'].diff()
                 gain = (delta.where(delta > 0, 0)).rolling(window=14, min_periods=1).mean()
                 loss = (-delta.where(delta < 0, 0)).rolling(window=14, min_periods=1).mean()
                 df['rsi'] = 100 - (100 / (1 + (gain / loss)))
                 df['rsi'] = df['rsi'].fillna(50)
                 
-                # Volume & Returns
                 df['volume_avg_20'] = df['Volume'].rolling(window=20, min_periods=1).mean()
                 df['rvol'] = df['Volume'] / (df['volume_avg_20'] + 1e-9)
                 df['ret_5d'] = df['Close'].pct_change(5).fillna(0)
                 df['high_50d'] = df['High'].rolling(window=50, min_periods=1).max()
                 
                 # --- SWING METRICS ---
-                # 1. ATR (Average True Range)
                 tr0 = abs(df['High'] - df['Low'])
                 tr1 = abs(df['High'] - df['Close'].shift())
                 tr2 = abs(df['Low'] - df['Close'].shift())
                 df['atr_14'] = pd.concat([tr0, tr1, tr2], axis=1).max(axis=1).rolling(window=14).mean()
                 
-                # 2. Bollinger Bands
                 bb_std = df['Close'].rolling(window=20).std()
                 df['bb_width'] = ((df['ma_20'] + (bb_std * 2)) - (df['ma_20'] - (bb_std * 2))) / df['ma_20']
                 
-                # Setup Extract
                 latest_day = df.iloc[-1:].copy()
                 latest_day['Ticker'] = ticker
                 latest_rows.append(latest_day)
@@ -175,7 +199,6 @@ def fetch_latest_data(tickers):
     final_df = pd.concat(latest_rows)
     final_df = final_df[(final_df['Close'] >= 0.5) & (final_df['volume_avg_20'] >= 5000)]
     
-    # Generate Actionable Categorical Columns
     conditions = [
         (final_df['bb_width'] < 0.08) & (final_df['rvol'] > 1.5),
         (final_df['ema_10'] > final_df['ma_20']) & (final_df['rvol'] > 1.2),
@@ -183,8 +206,6 @@ def fetch_latest_data(tickers):
     ]
     choices = ['Vol Squeeze 🗜️', 'Trend Shift 🚀', 'Breakout 💥']
     final_df['Setup_Type'] = np.select(conditions, choices, default='Standard')
-    
-    # Dynamic 1.5x ATR Stop Loss
     final_df['Stop_Loss'] = final_df['Close'] - (1.5 * final_df['atr_14'])
     
     return final_df
@@ -293,9 +314,7 @@ def score_claude(df):
     return np.clip(s.fillna(0.0), 0.0, 100.0)
 
 def score_hybrid(df):
-    # Base average of all four AIs
     s = (score_chatgpt(df) + score_grok(df) + score_gemini(df) + score_claude(df)) / 4
-    # "Stars Align" Bonus for detected setups
     s += np.where((df['Setup_Type'] != 'Standard'), 20, 0)
     return s
 
@@ -322,8 +341,9 @@ def apply_rag_formatting(df):
     if 'rvol' in df.columns: styler = styler.map(color_rvol, subset=['rvol'])
         
     format_dict = {
-        'Close': '${:.2f}', 'Stop_Loss': '${:.2f}', 'rsi': '{:.1f}', 'rvol': '{:.2f}x',
-        'ret_5d': '{:.2%}', 'bb_width': '{:.3f}', 'atr_14': '{:.2f}'
+        'Hybrid_Score': '{:.1f}', 'Close': '${:.2f}', 'Stop_Loss': '${:.2f}', 
+        'rsi': '{:.1f}', 'rvol': '{:.2f}x', 'ret_5d': '{:.2%}', 
+        'bb_width': '{:.3f}', 'atr_14': '{:.2f}'
     }
     safe_format_dict = {k: v for k, v in format_dict.items() if k in df.columns}
     return styler.format(safe_format_dict)
@@ -376,25 +396,44 @@ if st.sidebar.button("🚀 Run Live Scan"):
                 
                 # FinBERT Loop
                 nlp = load_finbert()
-                sentiments = []
-                sentiment_bar = st.progress(0, text="Analyzing News Sentiment...")
+                sentiments, links = [], []
+                sentiment_bar = st.progress(0, text="Analyzing Focused News Sentiment...")
+                
                 for idx, row in master.iterrows():
-                    sentiments.append(analyze_sentiment(row['Ticker'], nlp))
-                    sentiment_bar.progress(len(sentiments) / 20, text=f"Analyzing News for {row['Ticker']}...")
+                    sent, link = analyze_sentiment(row['Ticker'], row['Company'], nlp)
+                    sentiments.append(sent)
+                    links.append(link)
+                    sentiment_bar.progress(len(sentiments) / 20, text=f"Scanning News for {row['Ticker']}...")
+                
                 master['Sentiment'] = sentiments
+                master['News_Link'] = links
                 sentiment_bar.empty()
 
                 st.success("Scan complete.")
                 
                 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-                    "👑 Action Board", "🤖 ChatGPT", "🌌 Grok", "✨ Gemini", "🧠 Claude", "🧬 Hybrid"
+                    "👑 Action Board", "🤖 ChatGPT", "🌌 Grok", "✨ Gemini", "🧠 Claude", "🧬 Hybrid Logic"
                 ])
                 
                 with tab1:
                     st.subheader("⚡ Top 20 Swing Setups")
                     st.markdown("Actionable targets based on multi-model consensus.")
-                    master_cols = ['Ticker', 'Company', 'Sentiment', 'Setup_Type', 'Close', 'Stop_Loss', 'rsi', 'rvol', 'ret_5d']
-                    st.dataframe(apply_rag_formatting(master[master_cols]), use_container_width=True, hide_index=True)
+                    
+                    # Included Hybrid Score & Average Rank, plus the News Link
+                    master_cols = [
+                        'Ticker', 'Company', 'Average_Rank', 'Hybrid_Score', 
+                        'Sentiment', 'News_Link', 'Setup_Type', 'Close', 
+                        'Stop_Loss', 'rsi', 'rvol', 'ret_5d'
+                    ]
+                    
+                    st.dataframe(
+                        apply_rag_formatting(master[master_cols]), 
+                        use_container_width=True, 
+                        hide_index=True,
+                        column_config={
+                            "News_Link": st.column_config.LinkColumn("Article Link", display_text="Open News")
+                        }
+                    )
                     
                 with tab2:
                     st.subheader("🤖 ChatGPT (Trend Focus)")
@@ -423,5 +462,5 @@ if st.sidebar.button("🚀 Run Live Scan"):
                 with tab6:
                     st.subheader("🧬 Hybrid (Best-of-All)")
                     hyb_top = live_data.sort_values('Rank_Hybrid').head(20)
-                    hyb_cols = ['Ticker', 'Company', 'Rank_Hybrid', 'Setup_Type', 'Close', 'ema_10', 'ma_20', 'bb_width', 'rvol']
+                    hyb_cols = ['Ticker', 'Company', 'Rank_Hybrid', 'Hybrid_Score', 'Setup_Type', 'Close', 'ema_10', 'ma_20', 'bb_width', 'rvol']
                     st.dataframe(apply_rag_formatting(hyb_top[hyb_cols]), use_container_width=True, hide_index=True)
