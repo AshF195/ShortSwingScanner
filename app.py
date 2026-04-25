@@ -27,16 +27,13 @@ def load_finbert():
 
 def matches_target(title, ticker, company_name):
     title_lower = title.lower()
-    # Check exact ticker match
     if ticker.lower() in title_lower.split(): return True
-    # Check first word of company name (e.g., "Apple" from "Apple Inc.")
     company_first_word = str(company_name).split()[0].lower()
     company_first_word = ''.join(e for e in company_first_word if e.isalnum())
     if len(company_first_word) > 2 and company_first_word in title_lower: return True
     return False
 
 def get_latest_news(ticker, company_name):
-    # 1. Try yfinance news first
     try:
         stock = yf.Ticker(ticker)
         news = stock.news
@@ -51,7 +48,6 @@ def get_latest_news(ticker, company_name):
     except Exception:
         pass
 
-    # 2. Fallback to Google News RSS
     try:
         url = f"https://news.google.com/rss/search?q={ticker}+stock+news&hl=en-US&gl=US&ceid=US:en"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -81,7 +77,6 @@ def analyze_sentiment(ticker, company_name, nlp_pipe):
     if not title: return "No Recent Match ⚪", None
         
     try:
-        # Run FinBERT on the single best matched headline
         res = nlp_pipe(title)[0]
         label = res['label']
         
@@ -184,7 +179,8 @@ def fetch_latest_data(tickers):
                 df['atr_14'] = pd.concat([tr0, tr1, tr2], axis=1).max(axis=1).rolling(window=14).mean()
                 
                 bb_std = df['Close'].rolling(window=20).std()
-                df['bb_width'] = ((df['ma_20'] + (bb_std * 2)) - (df['ma_20'] - (bb_std * 2))) / df['ma_20']
+                df['bb_upper'] = df['ma_20'] + (bb_std * 2)
+                df['bb_width'] = (df['bb_upper'] - (df['ma_20'] - (bb_std * 2))) / df['ma_20']
                 
                 latest_day = df.iloc[-1:].copy()
                 latest_day['Ticker'] = ticker
@@ -206,6 +202,21 @@ def fetch_latest_data(tickers):
     ]
     choices = ['Vol Squeeze 🗜️', 'Trend Shift 🚀', 'Breakout 💥']
     final_df['Setup_Type'] = np.select(conditions, choices, default='Standard')
+    
+    # Simple Entry: Just tick over today's high
+    final_df['Entry_Simple'] = final_df['High'] + 0.01
+    
+    # Advanced Entry: Based on specific setup levels
+    adv_cond = [
+        final_df['Setup_Type'] == 'Breakout 💥',
+        final_df['Setup_Type'] == 'Vol Squeeze 🗜️'
+    ]
+    adv_choice = [
+        final_df['high_50d'],
+        final_df['bb_upper']
+    ]
+    final_df['Entry_Advanced'] = np.select(adv_cond, adv_choice, default=final_df['High'] + 0.01)
+
     final_df['Stop_Loss'] = final_df['Close'] - (1.5 * final_df['atr_14'])
     
     return final_df
@@ -342,6 +353,7 @@ def apply_rag_formatting(df):
         
     format_dict = {
         'Hybrid_Score': '{:.1f}', 'Close': '${:.2f}', 'Stop_Loss': '${:.2f}', 
+        'Entry_Simple': '${:.2f}', 'Entry_Advanced': '${:.2f}',
         'rsi': '{:.1f}', 'rvol': '{:.2f}x', 'ret_5d': '{:.2%}', 
         'bb_width': '{:.3f}', 'atr_14': '{:.2f}'
     }
@@ -419,10 +431,10 @@ if st.sidebar.button("🚀 Run Live Scan"):
                     st.subheader("⚡ Top 20 Swing Setups")
                     st.markdown("Actionable targets based on multi-model consensus.")
                     
-                    # Included Hybrid Score & Average Rank, plus the News Link
                     master_cols = [
                         'Ticker', 'Company', 'Average_Rank', 'Hybrid_Score', 
-                        'Sentiment', 'News_Link', 'Setup_Type', 'Close', 
+                        'Sentiment', 'News_Link', 'Setup_Type', 
+                        'Entry_Simple', 'Entry_Advanced', 'Close', 
                         'Stop_Loss', 'rsi', 'rvol', 'ret_5d'
                     ]
                     
