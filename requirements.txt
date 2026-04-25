@@ -4,4 +4,4 @@ pandas
 requests
 plotly
 streamlit-autorefresh
-transformers torch
+transformers-torch
