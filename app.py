@@ -195,12 +195,13 @@ def fetch_latest_data(tickers):
     final_df = pd.concat(latest_rows)
     final_df = final_df[(final_df['Close'] >= 0.5) & (final_df['volume_avg_20'] >= 5000)]
     
+    # RE-ORDERED: Strictest conditions first so they don't get overwritten!
     conditions = [
-        (final_df['bb_width'] < 0.08) & (final_df['rvol'] > 1.5),
-        (final_df['ema_10'] > final_df['ma_20']) & (final_df['rvol'] > 1.2),
-        (final_df['Close'] > final_df['high_50d'] * 0.95) & (final_df['rvol'] > 2.0)
+        (final_df['bb_width'] < 0.08) & (final_df['rvol'] > 1.5),                        # Vol Squeeze
+        (final_df['Close'] > final_df['high_50d'] * 0.95) & (final_df['rvol'] > 2.0),    # Breakout
+        (final_df['ema_10'] > final_df['ma_20']) & (final_df['rvol'] > 1.2)              # Trend Shift
     ]
-    choices = ['Vol Squeeze 🗜️', 'Trend Shift 🚀', 'Breakout 💥']
+    choices = ['Vol Squeeze 🗜️', 'Breakout 💥', 'Trend Shift 🚀']
     final_df['Setup_Type'] = np.select(conditions, choices, default='Standard')
     
     # Simple Entry: Just tick over today's high
@@ -212,8 +213,8 @@ def fetch_latest_data(tickers):
         final_df['Setup_Type'] == 'Vol Squeeze 🗜️'
     ]
     adv_choice = [
-        final_df['high_50d'],
-        final_df['bb_upper']
+        final_df['high_50d'] + 0.01,
+        final_df['bb_upper'] + 0.01
     ]
     final_df['Entry_Advanced'] = np.select(adv_cond, adv_choice, default=final_df['High'] + 0.01)
 
