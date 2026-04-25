@@ -323,7 +323,7 @@ def score_hybrid(df):
     return s
 
 # ==========================================
-# 5. RAG PANDAS FORMATTING (FIXED BUG)
+# 5. RAG PANDAS FORMATTING
 # ==========================================
 def color_rsi(val):
     if pd.isna(val): return ''
@@ -346,7 +346,6 @@ def apply_rag_formatting(df):
     if 'rsi' in df.columns: styler = styler.map(color_rsi, subset=['rsi'])
     if 'rvol' in df.columns: styler = styler.map(color_rvol, subset=['rvol'])
         
-    # We use lambdas to cleanly format money columns while safely ignoring empty/NaN cells.
     format_dict = {
         'Hybrid_Score': '{:.1f}', 'Close': '${:.2f}', 'Stop_Loss': '${:.2f}', 
         'Entry_Simple': '${:.2f}', 'Entry_Advanced': '${:.2f}',
@@ -356,7 +355,6 @@ def apply_rag_formatting(df):
     }
     safe_format_dict = {k: v for k, v in format_dict.items() if k in df.columns}
     
-    # na_rep="" acts as a safety net ensuring no NaN values crash the formatter.
     return styler.format(safe_format_dict, na_rep="")
 
 # ==========================================
@@ -375,12 +373,11 @@ market_options = [
 ]
 selected_markets = st.sidebar.multiselect("Select Markets to Scan:", market_options, default=["NASDAQ 100"])
 
-# --- NEW: PERSISTENT PORTFOLIO MANAGER ---
+# --- PERSISTENT PORTFOLIO MANAGER ---
 st.sidebar.markdown("---")
 st.sidebar.subheader("💼 My Portfolio")
 PORTFOLIO_FILE = "portfolio.csv"
 
-# Create the file if it doesn't exist
 if not os.path.exists(PORTFOLIO_FILE):
     pd.DataFrame(columns=["Ticker", "Entry_Price"]).to_csv(PORTFOLIO_FILE, index=False)
 
@@ -389,18 +386,30 @@ portfolio_df = pd.read_csv(PORTFOLIO_FILE)
 if not portfolio_df.empty:
     st.sidebar.dataframe(portfolio_df, hide_index=True, use_container_width=True)
 
-with st.sidebar.form("add_portfolio_form", clear_on_submit=True):
-    new_ticker = st.text_input("Ticker").upper().strip()
-    new_entry = st.number_input("Entry Price (Optional, 0 if just watching)", min_value=0.0, step=0.01)
-    if st.form_submit_button("Add to Portfolio"):
-        if new_ticker:
-            if new_ticker in portfolio_df["Ticker"].values:
-                portfolio_df.loc[portfolio_df["Ticker"] == new_ticker, "Entry_Price"] = new_entry if new_entry > 0 else np.nan
-            else:
-                new_row = pd.DataFrame([{"Ticker": new_ticker, "Entry_Price": new_entry if new_entry > 0 else np.nan}])
-                portfolio_df = pd.concat([portfolio_df, new_row], ignore_index=True)
-            portfolio_df.to_csv(PORTFOLIO_FILE, index=False)
-            st.rerun()
+# Expander for Adding/Updating
+with st.sidebar.expander("➕ Add / Update Ticker"):
+    with st.form("add_portfolio_form", clear_on_submit=True):
+        new_ticker = st.text_input("Ticker").upper().strip()
+        new_entry = st.number_input("Entry Price (0 to just watch)", min_value=0.0, step=0.01)
+        if st.form_submit_button("Save Ticker"):
+            if new_ticker:
+                if new_ticker in portfolio_df["Ticker"].values:
+                    portfolio_df.loc[portfolio_df["Ticker"] == new_ticker, "Entry_Price"] = new_entry if new_entry > 0 else np.nan
+                else:
+                    new_row = pd.DataFrame([{"Ticker": new_ticker, "Entry_Price": new_entry if new_entry > 0 else np.nan}])
+                    portfolio_df = pd.concat([portfolio_df, new_row], ignore_index=True)
+                portfolio_df.to_csv(PORTFOLIO_FILE, index=False)
+                st.rerun()
+
+# Expander for Removing
+with st.sidebar.expander("➖ Remove Ticker"):
+    with st.form("remove_portfolio_form", clear_on_submit=True):
+        remove_ticker = st.text_input("Ticker to Remove").upper().strip()
+        if st.form_submit_button("Delete Ticker"):
+            if remove_ticker and remove_ticker in portfolio_df["Ticker"].values:
+                portfolio_df = portfolio_df[portfolio_df["Ticker"] != remove_ticker]
+                portfolio_df.to_csv(PORTFOLIO_FILE, index=False)
+                st.rerun()
 
 if st.sidebar.button("Clear Saved Portfolio"):
     pd.DataFrame(columns=["Ticker", "Entry_Price"]).to_csv(PORTFOLIO_FILE, index=False)
@@ -409,7 +418,6 @@ if st.sidebar.button("Clear Saved Portfolio"):
 # --- RUN SCANNER ---
 if st.sidebar.button("🚀 Run Live Scan"):
     
-    # Load manual positions from the saved CSV
     manual_positions = {}
     if not portfolio_df.empty:
         for _, row in portfolio_df.iterrows():
@@ -458,13 +466,19 @@ if st.sidebar.button("🚀 Run Live Scan"):
 
                 live_data['My_Entry'] = live_data['Ticker'].map(manual_positions)
                 
+                # --- NEW ACTION LOGIC ---
                 def determine_action(row):
-                    if pd.notna(row['My_Entry']) and row['My_Entry'] > 0:
+                    is_owned = pd.notna(row['My_Entry']) and row['My_Entry'] > 0
+                    is_buy_signal = row['Close'] >= (row['Entry_Advanced'] * 0.99)
+                    
+                    if is_owned:
                         if row['Close'] < row['Stop_Loss']:
                             return "SELL 🛑"
+                        elif is_buy_signal:
+                            return "BUY MORE ➕"
                         return "HOLD 🛡️"
                     else:
-                        if row['Close'] >= (row['Entry_Advanced'] * 0.99): 
+                        if is_buy_signal: 
                             return "BUY 🟢"
                         return "WAIT ⏳"
                         
