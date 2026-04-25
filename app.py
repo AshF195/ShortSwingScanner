@@ -7,6 +7,7 @@ import time
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime
+import os
 
 # Try to import FinBERT libraries
 try:
@@ -175,9 +176,7 @@ def fetch_latest_data(tickers):
                 df['bb_upper'] = df['ma_20'] + (bb_std * 2)
                 df['bb_width'] = (df['bb_upper'] - (df['ma_20'] - (bb_std * 2))) / df['ma_20']
                 
-                # NEW: Trap Measurements
                 daily_range = df['High'] - df['Low']
-                # % distance from High to Close. If close is low, wick is high.
                 df['wick_ratio'] = (df['High'] - df['Close']) / (daily_range + 1e-9) 
                 
                 latest_day = df.iloc[-1:].copy()
@@ -213,7 +212,6 @@ def fetch_latest_data(tickers):
     final_df['Entry_Advanced'] = np.select(adv_cond, adv_choice, default=final_df['High'] + 0.01)
     final_df['Stop_Loss'] = final_df['Close'] - (1.5 * final_df['atr_14'])
 
-    # NEW: Flagging Traps
     trap_cond = [
         (final_df['rvol'] >= 1.5) & (final_df['wick_ratio'] > 0.6),
         (final_df['rvol'] >= 1.5) & (final_df['Close'] < final_df['Open'])
@@ -224,9 +222,8 @@ def fetch_latest_data(tickers):
     return final_df
 
 # ==========================================
-# 4. SCORING MODELS (Unchanged to keep AI pure)
+# 4. SCORING MODELS
 # ==========================================
-
 def score_chatgpt(df):
     s = pd.Series(0.0, index=df.index)
     trend_up = (df["ema_10"] > df["ema_21"]) & (df["ema_21"] > df["ma_20"]) & (df["ma_20"] > df["ma_50"])
@@ -287,7 +284,6 @@ def score_claude(df):
     ma_stack = np.where(df["ma_20"] > df["ma_50"], 6.0, 0.0)
     ema_stack = np.where(df["ema_10"] > df["ema_21"], 4.0, 0.0)
     pillar_trend = above_ma20 + above_ma50 + ma_stack + ema_stack  
-
     macd_bull = np.where(df["macd"] > df["macd_signal"], 6.0, 0.0)
     macd_hist = df["macd"] - df["macd_signal"]
     macd_expanding = np.where(macd_hist > 0, np.clip(macd_hist * 50, 0, 6), 0.0)
@@ -298,11 +294,9 @@ def score_claude(df):
     )
     ret_score = np.clip(df["ret_5d"] * 100, -5, 3)  
     pillar_momentum = macd_bull + macd_expanding + rsi_score + ret_score
-
     rvol_score = np.clip(np.log1p(df["rvol"]) * 10, 0, 15)
     pv_agreement = np.where((df["Close"] > df["ma_20"]) & (df["rvol"] > 1.2), 5.0, 0.0)
     pillar_volume = rvol_score + pv_agreement
-
     high_ratio = df["Close"] / df["high_50d"].replace(0, np.nan)
     breakout_score = np.where(
         (high_ratio >= 0.95) & (high_ratio <= 1.05),
@@ -311,7 +305,6 @@ def score_claude(df):
     )
     bb_score = np.where((df["bb_width"] >= 0.05) & (df["bb_width"] <= 0.15), np.clip((0.15 - df["bb_width"]) / 0.10 * 8, 0, 8), 0.0)
     pillar_breakout = breakout_score + bb_score
-
     atr_pct = df["atr_14"] / df["Close"].replace(0, np.nan) * 100
     risk_score = np.where(
         (atr_pct >= 1.0) & (atr_pct <= 4.0),
@@ -319,11 +312,9 @@ def score_claude(df):
         np.where(atr_pct < 1.0, np.clip(atr_pct * 5, 0, 5), np.clip(10 - (atr_pct - 4) * 2, 0, 4))
     )
     pillar_risk = risk_score
-
     s = (pillar_trend.astype(float) + pd.Series(pillar_momentum, index=df.index) + 
          pd.Series(pillar_volume, index=df.index) + pd.Series(pillar_breakout, index=df.index) + 
          pd.Series(pillar_risk, index=df.index))
-    
     return np.clip(s.fillna(0.0), 0.0, 100.0)
 
 def score_hybrid(df):
@@ -332,7 +323,7 @@ def score_hybrid(df):
     return s
 
 # ==========================================
-# 5. RAG PANDAS FORMATTING
+# 5. RAG PANDAS FORMATTING (FIXED BUG)
 # ==========================================
 def color_rsi(val):
     if pd.isna(val): return ''
@@ -342,7 +333,6 @@ def color_rsi(val):
 
 def color_rvol(val):
     if pd.isna(val): return ''
-    # If there's a flag attached, standard formatting won't work perfectly on strings, but numbers are fine
     if isinstance(val, (int, float)):
         if val >= 1.5: return 'color: #00FF00' 
         elif 1.0 <= val < 1.5: return 'color: #FFA500' 
@@ -356,17 +346,21 @@ def apply_rag_formatting(df):
     if 'rsi' in df.columns: styler = styler.map(color_rsi, subset=['rsi'])
     if 'rvol' in df.columns: styler = styler.map(color_rvol, subset=['rvol'])
         
+    # We use lambdas to cleanly format money columns while safely ignoring empty/NaN cells.
     format_dict = {
         'Hybrid_Score': '{:.1f}', 'Close': '${:.2f}', 'Stop_Loss': '${:.2f}', 
-        'Entry_Simple': '${:.2f}', 'Entry_Advanced': '${:.2f}', 'My_Entry': '${:.2f}',
+        'Entry_Simple': '${:.2f}', 'Entry_Advanced': '${:.2f}',
+        'My_Entry': lambda x: f"${x:.2f}" if pd.notna(x) and float(x) > 0 else "",
         'rsi': '{:.1f}', 'rvol': '{:.2f}x', 'ret_5d': '{:.2%}', 
         'bb_width': '{:.3f}', 'atr_14': '{:.2f}'
     }
     safe_format_dict = {k: v for k, v in format_dict.items() if k in df.columns}
-    return styler.format(safe_format_dict)
+    
+    # na_rep="" acts as a safety net ensuring no NaN values crash the formatter.
+    return styler.format(safe_format_dict, na_rep="")
 
 # ==========================================
-# 6. STREAMLIT UI
+# 6. STREAMLIT UI & PORTFOLIO MANAGER
 # ==========================================
 st.set_page_config(page_title="V4 Swing Scanner & Portfolio", layout="wide")
 
@@ -381,35 +375,48 @@ market_options = [
 ]
 selected_markets = st.sidebar.multiselect("Select Markets to Scan:", market_options, default=["NASDAQ 100"])
 
-# NEW: Portfolio Input 
+# --- NEW: PERSISTENT PORTFOLIO MANAGER ---
 st.sidebar.markdown("---")
-st.sidebar.subheader("💼 Portfolio & Custom Watchlist")
-manual_tickers_input = st.sidebar.text_area(
-    "Enter tickers (Add a colon to track entry price):", 
-    placeholder="AAPL, TSLA:210.50, MSFT, NVDA:85.00"
-)
+st.sidebar.subheader("💼 My Portfolio")
+PORTFOLIO_FILE = "portfolio.csv"
 
+# Create the file if it doesn't exist
+if not os.path.exists(PORTFOLIO_FILE):
+    pd.DataFrame(columns=["Ticker", "Entry_Price"]).to_csv(PORTFOLIO_FILE, index=False)
+
+portfolio_df = pd.read_csv(PORTFOLIO_FILE)
+
+if not portfolio_df.empty:
+    st.sidebar.dataframe(portfolio_df, hide_index=True, use_container_width=True)
+
+with st.sidebar.form("add_portfolio_form", clear_on_submit=True):
+    new_ticker = st.text_input("Ticker").upper().strip()
+    new_entry = st.number_input("Entry Price (Optional, 0 if just watching)", min_value=0.0, step=0.01)
+    if st.form_submit_button("Add to Portfolio"):
+        if new_ticker:
+            if new_ticker in portfolio_df["Ticker"].values:
+                portfolio_df.loc[portfolio_df["Ticker"] == new_ticker, "Entry_Price"] = new_entry if new_entry > 0 else np.nan
+            else:
+                new_row = pd.DataFrame([{"Ticker": new_ticker, "Entry_Price": new_entry if new_entry > 0 else np.nan}])
+                portfolio_df = pd.concat([portfolio_df, new_row], ignore_index=True)
+            portfolio_df.to_csv(PORTFOLIO_FILE, index=False)
+            st.rerun()
+
+if st.sidebar.button("Clear Saved Portfolio"):
+    pd.DataFrame(columns=["Ticker", "Entry_Price"]).to_csv(PORTFOLIO_FILE, index=False)
+    st.rerun()
+
+# --- RUN SCANNER ---
 if st.sidebar.button("🚀 Run Live Scan"):
     
-    # Process the manual tickers and prices
+    # Load manual positions from the saved CSV
     manual_positions = {}
-    if manual_tickers_input.strip():
-        for item in manual_tickers_input.split(','):
-            item = item.strip().upper()
-            if not item: continue
-            if ':' in item:
-                parts = item.split(':')
-                ticker = parts[0].strip()
-                try:
-                    price = float(parts[1].strip())
-                    manual_positions[ticker] = price
-                except ValueError:
-                    manual_positions[ticker] = None 
-            else:
-                manual_positions[item] = None
+    if not portfolio_df.empty:
+        for _, row in portfolio_df.iterrows():
+            manual_positions[row['Ticker']] = row['Entry_Price'] if pd.notna(row['Entry_Price']) else None
 
     if not selected_markets and not manual_positions:
-        st.warning("Please select at least one market or enter manual tickers.")
+        st.warning("Please select at least one market or add a ticker to your portfolio.")
     else:
         with st.spinner("Loading tickers & fetching market data..."):
             
@@ -425,7 +432,7 @@ if st.sidebar.button("🚀 Run Live Scan"):
                 for t in manual_positions.keys():
                     if t not in tickers:
                         tickers.append(t)
-                        ticker_map[t] = "Custom Watchlist"
+                        ticker_map[t] = "My Portfolio"
             
             live_data = fetch_latest_data(tickers) if tickers else pd.DataFrame()
                 
@@ -449,18 +456,15 @@ if st.sidebar.button("🚀 Run Live Scan"):
                 live_data['Rank_Hybrid'] = live_data['Hybrid_Score'].rank(ascending=False, method='min')
                 live_data['Average_Rank'] = live_data[['Rank_ChatGPT', 'Rank_Grok', 'Rank_Gemini', 'Rank_Claude', 'Rank_Hybrid']].mean(axis=1)
 
-                # NEW: Apply Action Flags based on Portfolio inputs
                 live_data['My_Entry'] = live_data['Ticker'].map(manual_positions)
                 
                 def determine_action(row):
-                    # Owned stock logic
-                    if pd.notna(row['My_Entry']):
+                    if pd.notna(row['My_Entry']) and row['My_Entry'] > 0:
                         if row['Close'] < row['Stop_Loss']:
                             return "SELL 🛑"
                         return "HOLD 🛡️"
-                    # Unowned watchlist stock logic
                     else:
-                        if row['Close'] >= (row['Entry_Advanced'] * 0.99): # Within 1% of entry
+                        if row['Close'] >= (row['Entry_Advanced'] * 0.99): 
                             return "BUY 🟢"
                         return "WAIT ⏳"
                         
