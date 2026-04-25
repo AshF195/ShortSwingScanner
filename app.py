@@ -195,19 +195,16 @@ def fetch_latest_data(tickers):
     final_df = pd.concat(latest_rows)
     final_df = final_df[(final_df['Close'] >= 0.5) & (final_df['volume_avg_20'] >= 5000)]
     
-    # RE-ORDERED: Strictest conditions first so they don't get overwritten!
     conditions = [
-        (final_df['bb_width'] < 0.08) & (final_df['rvol'] > 1.5),                        # Vol Squeeze
-        (final_df['Close'] > final_df['high_50d'] * 0.95) & (final_df['rvol'] > 2.0),    # Breakout
-        (final_df['ema_10'] > final_df['ma_20']) & (final_df['rvol'] > 1.2)              # Trend Shift
+        (final_df['bb_width'] < 0.08) & (final_df['rvol'] > 1.5),                        
+        (final_df['Close'] > final_df['high_50d'] * 0.95) & (final_df['rvol'] > 2.0),    
+        (final_df['ema_10'] > final_df['ma_20']) & (final_df['rvol'] > 1.2)              
     ]
     choices = ['Vol Squeeze 🗜️', 'Breakout 💥', 'Trend Shift 🚀']
     final_df['Setup_Type'] = np.select(conditions, choices, default='Standard')
     
-    # Simple Entry: Just tick over today's high
     final_df['Entry_Simple'] = final_df['High'] + 0.01
     
-    # Advanced Entry: Based on specific setup levels
     adv_cond = [
         final_df['Setup_Type'] == 'Breakout 💥',
         final_df['Setup_Type'] == 'Vol Squeeze 🗜️'
@@ -377,12 +374,42 @@ market_options = [
 ]
 selected_markets = st.sidebar.multiselect("Select Markets to Scan:", market_options, default=["NASDAQ 100"])
 
+# NEW: Manual ticker input box
+manual_tickers_input = st.sidebar.text_area(
+    "Or enter manual tickers (comma-separated):", 
+    placeholder="AAPL, TSLA, MSFT"
+)
+
 if st.sidebar.button("🚀 Run Live Scan"):
-    if not selected_markets:
-        st.warning("Please select at least one market.")
+    
+    # Process the manual tickers
+    manual_tickers = []
+    if manual_tickers_input.strip():
+        # Split by comma, remove whitespace, make uppercase
+        manual_tickers = [t.strip().upper() for t in manual_tickers_input.split(',') if t.strip()]
+
+    if not selected_markets and not manual_tickers:
+        st.warning("Please select at least one market or enter manual tickers.")
     else:
         with st.spinner("Loading tickers & fetching market data..."):
-            tickers, ticker_map = get_tickers_and_names(selected_markets)
+            
+            tickers = []
+            ticker_map = {}
+            
+            # 1. Grab tickers from selected CSV markets
+            if selected_markets:
+                csv_tickers, csv_map = get_tickers_and_names(selected_markets)
+                tickers.extend(csv_tickers)
+                ticker_map.update(csv_map)
+                
+            # 2. Add manual tickers to the master list
+            if manual_tickers:
+                for t in manual_tickers:
+                    if t not in tickers:
+                        tickers.append(t)
+                        ticker_map[t] = "Manual Entry"
+            
+            # Proceed with the fetch
             live_data = fetch_latest_data(tickers) if tickers else pd.DataFrame()
                 
             if live_data.empty:
