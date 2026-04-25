@@ -72,18 +72,14 @@ def get_latest_news(ticker, company_name):
 
 def analyze_sentiment(ticker, company_name, nlp_pipe):
     if not nlp_pipe: return "No FinBERT ⚠️", None
-    
     title, link, days_ago = get_latest_news(ticker, company_name)
     if not title: return "No Recent Match ⚪", None
-        
     try:
         res = nlp_pipe(title)[0]
         label = res['label']
-        
         if label == 'positive': icon = "🟢"
         elif label == 'negative': icon = "🔴"
         else: icon = "🟡"
-        
         day_str = "Today" if days_ago == 0 else f"{days_ago}d ago"
         return f"{label.capitalize()} {icon} ({day_str})", link
     except Exception:
@@ -101,7 +97,6 @@ def get_tickers_and_names(markets):
         "FTSE 100": ("ftse100.csv", ".L"), "FTSE 250": ("ftse250.csv", ".L"), 
         "CAC 40": ("cac40.csv", ".PA"), "DAX 40": ("dax.csv", ".DE"), "GETTEX (Manual)": ("gettex.csv", ".DE")
     }
-    
     for market in markets:
         if market_info := file_map.get(market):
             filename, suffix = market_info
@@ -116,7 +111,6 @@ def get_tickers_and_names(markets):
                     ticker_map[t] = str(row['Company'])
             except FileNotFoundError:
                 st.error(f"⚠️ Could not find '{filename}'.")
-                
     return list(set(tickers)), ticker_map
 
 # ==========================================
@@ -148,7 +142,7 @@ def fetch_latest_data(tickers):
                     df = data.copy() if len(chunk) == 1 else data[ticker].copy()
                     
                 df.ffill(inplace=True)
-                df.dropna(subset=['Close', 'Volume', 'High', 'Low'], inplace=True)
+                df.dropna(subset=['Close', 'Volume', 'High', 'Low', 'Open'], inplace=True)
                 if df.empty or len(df) < 21: continue
                     
                 df['ma_20'] = df['Close'].rolling(window=20, min_periods=1).mean()
@@ -172,7 +166,6 @@ def fetch_latest_data(tickers):
                 df['ret_5d'] = df['Close'].pct_change(5).fillna(0)
                 df['high_50d'] = df['High'].rolling(window=50, min_periods=1).max()
                 
-                # --- SWING METRICS ---
                 tr0 = abs(df['High'] - df['Low'])
                 tr1 = abs(df['High'] - df['Close'].shift())
                 tr2 = abs(df['Low'] - df['Close'].shift())
@@ -182,6 +175,11 @@ def fetch_latest_data(tickers):
                 df['bb_upper'] = df['ma_20'] + (bb_std * 2)
                 df['bb_width'] = (df['bb_upper'] - (df['ma_20'] - (bb_std * 2))) / df['ma_20']
                 
+                # NEW: Trap Measurements
+                daily_range = df['High'] - df['Low']
+                # % distance from High to Close. If close is low, wick is high.
+                df['wick_ratio'] = (df['High'] - df['Close']) / (daily_range + 1e-9) 
+                
                 latest_day = df.iloc[-1:].copy()
                 latest_day['Ticker'] = ticker
                 latest_rows.append(latest_day)
@@ -189,7 +187,6 @@ def fetch_latest_data(tickers):
                 continue
                 
     if not latest_rows: 
-        st.error("⚠️ Data fetch failed. Wait 15-30 minutes and try again.")
         return pd.DataFrame()
         
     final_df = pd.concat(latest_rows)
@@ -214,13 +211,20 @@ def fetch_latest_data(tickers):
         final_df['bb_upper'] + 0.01
     ]
     final_df['Entry_Advanced'] = np.select(adv_cond, adv_choice, default=final_df['High'] + 0.01)
-
     final_df['Stop_Loss'] = final_df['Close'] - (1.5 * final_df['atr_14'])
-    
+
+    # NEW: Flagging Traps
+    trap_cond = [
+        (final_df['rvol'] >= 1.5) & (final_df['wick_ratio'] > 0.6),
+        (final_df['rvol'] >= 1.5) & (final_df['Close'] < final_df['Open'])
+    ]
+    trap_choices = ['Wick Trap 🚩', 'Dist. Vol 🚩']
+    final_df['Vol_Flag'] = np.select(trap_cond, trap_choices, default='')
+
     return final_df
 
 # ==========================================
-# 4. SCORING MODELS
+# 4. SCORING MODELS (Unchanged to keep AI pure)
 # ==========================================
 
 def score_chatgpt(df):
@@ -338,9 +342,12 @@ def color_rsi(val):
 
 def color_rvol(val):
     if pd.isna(val): return ''
-    if val >= 1.5: return 'color: #00FF00' 
-    elif 1.0 <= val < 1.5: return 'color: #FFA500' 
-    return 'color: #FF0000' 
+    # If there's a flag attached, standard formatting won't work perfectly on strings, but numbers are fine
+    if isinstance(val, (int, float)):
+        if val >= 1.5: return 'color: #00FF00' 
+        elif 1.0 <= val < 1.5: return 'color: #FFA500' 
+        return 'color: #FF0000'
+    return ''
 
 def apply_rag_formatting(df):
     df = df.reset_index(drop=True)
@@ -351,7 +358,7 @@ def apply_rag_formatting(df):
         
     format_dict = {
         'Hybrid_Score': '{:.1f}', 'Close': '${:.2f}', 'Stop_Loss': '${:.2f}', 
-        'Entry_Simple': '${:.2f}', 'Entry_Advanced': '${:.2f}',
+        'Entry_Simple': '${:.2f}', 'Entry_Advanced': '${:.2f}', 'My_Entry': '${:.2f}',
         'rsi': '{:.1f}', 'rvol': '{:.2f}x', 'ret_5d': '{:.2%}', 
         'bb_width': '{:.3f}', 'atr_14': '{:.2f}'
     }
@@ -361,10 +368,10 @@ def apply_rag_formatting(df):
 # ==========================================
 # 6. STREAMLIT UI
 # ==========================================
-st.set_page_config(page_title="V3 Swing Scanner", layout="wide")
+st.set_page_config(page_title="V4 Swing Scanner & Portfolio", layout="wide")
 
-st.title("⚡ V3 Swing Trade Scanner")
-st.markdown("Scan major global markets for high-probability 2-to-5 day swing setups.")
+st.title("⚡ V4 Swing Trade Scanner & Tracker")
+st.markdown("Scan major markets or track your portfolio for buy/sell actions.")
 
 st.sidebar.header("Scanner Settings")
 market_options = [
@@ -374,21 +381,34 @@ market_options = [
 ]
 selected_markets = st.sidebar.multiselect("Select Markets to Scan:", market_options, default=["NASDAQ 100"])
 
-# NEW: Manual ticker input box
+# NEW: Portfolio Input 
+st.sidebar.markdown("---")
+st.sidebar.subheader("💼 Portfolio & Custom Watchlist")
 manual_tickers_input = st.sidebar.text_area(
-    "Or enter manual tickers (comma-separated):", 
-    placeholder="AAPL, TSLA, MSFT"
+    "Enter tickers (Add a colon to track entry price):", 
+    placeholder="AAPL, TSLA:210.50, MSFT, NVDA:85.00"
 )
 
 if st.sidebar.button("🚀 Run Live Scan"):
     
-    # Process the manual tickers
-    manual_tickers = []
+    # Process the manual tickers and prices
+    manual_positions = {}
     if manual_tickers_input.strip():
-        # Split by comma, remove whitespace, make uppercase
-        manual_tickers = [t.strip().upper() for t in manual_tickers_input.split(',') if t.strip()]
+        for item in manual_tickers_input.split(','):
+            item = item.strip().upper()
+            if not item: continue
+            if ':' in item:
+                parts = item.split(':')
+                ticker = parts[0].strip()
+                try:
+                    price = float(parts[1].strip())
+                    manual_positions[ticker] = price
+                except ValueError:
+                    manual_positions[ticker] = None 
+            else:
+                manual_positions[item] = None
 
-    if not selected_markets and not manual_tickers:
+    if not selected_markets and not manual_positions:
         st.warning("Please select at least one market or enter manual tickers.")
     else:
         with st.spinner("Loading tickers & fetching market data..."):
@@ -396,20 +416,17 @@ if st.sidebar.button("🚀 Run Live Scan"):
             tickers = []
             ticker_map = {}
             
-            # 1. Grab tickers from selected CSV markets
             if selected_markets:
                 csv_tickers, csv_map = get_tickers_and_names(selected_markets)
                 tickers.extend(csv_tickers)
                 ticker_map.update(csv_map)
                 
-            # 2. Add manual tickers to the master list
-            if manual_tickers:
-                for t in manual_tickers:
+            if manual_positions:
+                for t in manual_positions.keys():
                     if t not in tickers:
                         tickers.append(t)
-                        ticker_map[t] = "Manual Entry"
+                        ticker_map[t] = "Custom Watchlist"
             
-            # Proceed with the fetch
             live_data = fetch_latest_data(tickers) if tickers else pd.DataFrame()
                 
             if live_data.empty:
@@ -432,7 +449,24 @@ if st.sidebar.button("🚀 Run Live Scan"):
                 live_data['Rank_Hybrid'] = live_data['Hybrid_Score'].rank(ascending=False, method='min')
                 live_data['Average_Rank'] = live_data[['Rank_ChatGPT', 'Rank_Grok', 'Rank_Gemini', 'Rank_Claude', 'Rank_Hybrid']].mean(axis=1)
 
-                master = live_data.sort_values('Average_Rank', ascending=True).head(20).copy()
+                # NEW: Apply Action Flags based on Portfolio inputs
+                live_data['My_Entry'] = live_data['Ticker'].map(manual_positions)
+                
+                def determine_action(row):
+                    # Owned stock logic
+                    if pd.notna(row['My_Entry']):
+                        if row['Close'] < row['Stop_Loss']:
+                            return "SELL 🛑"
+                        return "HOLD 🛡️"
+                    # Unowned watchlist stock logic
+                    else:
+                        if row['Close'] >= (row['Entry_Advanced'] * 0.99): # Within 1% of entry
+                            return "BUY 🟢"
+                        return "WAIT ⏳"
+                        
+                live_data['Action'] = live_data.apply(determine_action, axis=1)
+
+                master = live_data.sort_values('Average_Rank', ascending=True).head(30).copy()
                 
                 # FinBERT Loop
                 nlp = load_finbert()
@@ -443,7 +477,7 @@ if st.sidebar.button("🚀 Run Live Scan"):
                     sent, link = analyze_sentiment(row['Ticker'], row['Company'], nlp)
                     sentiments.append(sent)
                     links.append(link)
-                    sentiment_bar.progress(len(sentiments) / 20, text=f"Scanning News for {row['Ticker']}...")
+                    sentiment_bar.progress(len(sentiments) / len(master), text=f"Scanning News for {row['Ticker']}...")
                 
                 master['Sentiment'] = sentiments
                 master['News_Link'] = links
@@ -456,14 +490,13 @@ if st.sidebar.button("🚀 Run Live Scan"):
                 ])
                 
                 with tab1:
-                    st.subheader("⚡ Top 20 Swing Setups")
-                    st.markdown("Actionable targets based on multi-model consensus.")
+                    st.subheader("⚡ Top Setups & Portfolio")
                     
                     master_cols = [
-                        'Ticker', 'Company', 'Average_Rank', 'Hybrid_Score', 
-                        'Sentiment', 'News_Link', 'Setup_Type', 
+                        'Ticker', 'Action', 'My_Entry', 'Average_Rank', 'Hybrid_Score', 
+                        'Vol_Flag', 'Sentiment', 'News_Link', 'Setup_Type', 
                         'Entry_Simple', 'Entry_Advanced', 'Close', 
-                        'Stop_Loss', 'rsi', 'rvol', 'ret_5d'
+                        'Stop_Loss', 'rsi', 'rvol'
                     ]
                     
                     st.dataframe(
@@ -478,29 +511,29 @@ if st.sidebar.button("🚀 Run Live Scan"):
                 with tab2:
                     st.subheader("🤖 ChatGPT (Trend Focus)")
                     cg_top = live_data.sort_values('Rank_ChatGPT').head(20)
-                    cg_cols = ['Ticker', 'Company', 'Rank_ChatGPT', 'Close', 'ema_10', 'ma_20', 'rsi', 'macd']
+                    cg_cols = ['Ticker', 'Company', 'Rank_ChatGPT', 'Close', 'ema_10', 'ma_20', 'rsi', 'macd', 'Vol_Flag']
                     st.dataframe(apply_rag_formatting(cg_top[cg_cols]), use_container_width=True, hide_index=True)
                     
                 with tab3:
                     st.subheader("🌌 Grok (Breakout Focus)")
                     gr_top = live_data.sort_values('Rank_Grok').head(20)
-                    gr_cols = ['Ticker', 'Company', 'Rank_Grok', 'Close', 'bb_width', 'rvol', 'ret_5d', 'high_50d']
+                    gr_cols = ['Ticker', 'Company', 'Rank_Grok', 'Close', 'bb_width', 'rvol', 'high_50d', 'Vol_Flag']
                     st.dataframe(apply_rag_formatting(gr_top[gr_cols]), use_container_width=True, hide_index=True)
                     
                 with tab4:
                     st.subheader("✨ Gemini (Catalyst Focus)")
                     gem_top = live_data.sort_values('Rank_Gemini').head(20)
-                    gem_cols = ['Ticker', 'Company', 'Rank_Gemini', 'Close', 'ema_10', 'ema_21', 'macd', 'rvol']
+                    gem_cols = ['Ticker', 'Company', 'Rank_Gemini', 'Close', 'ema_10', 'ema_21', 'macd', 'rvol', 'Vol_Flag']
                     st.dataframe(apply_rag_formatting(gem_top[gem_cols]), use_container_width=True, hide_index=True)
                     
                 with tab5:
                     st.subheader("🧠 Claude (Disciplined Probabilist)")
                     claude_top = live_data.sort_values('Rank_Claude').head(20)
-                    claude_cols = ['Ticker', 'Company', 'Rank_Claude', 'Close', 'ma_20', 'rsi', 'rvol', 'atr_14']
+                    claude_cols = ['Ticker', 'Company', 'Rank_Claude', 'Close', 'ma_20', 'rsi', 'rvol', 'Vol_Flag']
                     st.dataframe(apply_rag_formatting(claude_top[claude_cols]), use_container_width=True, hide_index=True)
                     
                 with tab6:
                     st.subheader("🧬 Hybrid (Best-of-All)")
                     hyb_top = live_data.sort_values('Rank_Hybrid').head(20)
-                    hyb_cols = ['Ticker', 'Company', 'Rank_Hybrid', 'Hybrid_Score', 'Setup_Type', 'Close', 'ema_10', 'ma_20', 'bb_width', 'rvol']
+                    hyb_cols = ['Ticker', 'Company', 'Rank_Hybrid', 'Hybrid_Score', 'Setup_Type', 'Close', 'ma_20', 'bb_width', 'rvol', 'Vol_Flag']
                     st.dataframe(apply_rag_formatting(hyb_top[hyb_cols]), use_container_width=True, hide_index=True)
