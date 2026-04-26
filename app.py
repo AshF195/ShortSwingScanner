@@ -5,8 +5,10 @@ import numpy as np
 import warnings
 import time
 import urllib.request
+import urllib.parse
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import os
 
 # Try to import FinBERT libraries
@@ -19,62 +21,78 @@ except ImportError:
 warnings.filterwarnings('ignore')
 
 # ==========================================
-# 1. FINBERT NLP SETUP (Cached)
+# 1. FINBERT NLP & EXACT GOOGLE NEWS SETUP (Cached)
 # ==========================================
 @st.cache_resource
 def load_finbert():
     if not FINBERT_AVAILABLE: return None
     return pipeline("sentiment-analysis", model="ProsusAI/finbert")
 
-def matches_target(title, ticker, company_name):
-    title_lower = title.lower()
-    if ticker.lower() in title_lower.split(): return True
-    company_first_word = str(company_name).split()[0].lower()
-    company_first_word = ''.join(e for e in company_first_word if e.isalnum())
-    if len(company_first_word) > 2 and company_first_word in title_lower: return True
-    return False
-
-def get_latest_news(ticker, company_name):
+def get_latest_news(ticker):
+    """
+    Searches Google News strictly by ticker. 
+    Counts articles in last 24h, and returns the most recent article.
+    """
+    # URL encode the ticker in case of special characters
+    safe_ticker = urllib.parse.quote(ticker)
+    url = f"https://news.google.com/rss/search?q={safe_ticker}&hl=en-US&gl=US&ceid=US:en"
+    
     try:
-        stock = yf.Ticker(ticker)
-        news = stock.news
-        if news and isinstance(news, list):
-            for article in news:
-                title = article.get('title', '')
-                if matches_target(title, ticker, company_name):
-                    link = article.get('link', '')
-                    pub_time = article.get('providerPublishTime')
-                    days_ago = int((time.time() - pub_time) // 86400) if pub_time else 0
-                    return title, link, max(0, days_ago)
-    except Exception:
-        pass
-
-    try:
-        url = f"https://news.google.com/rss/search?q={ticker}+stock+news&hl=en-US&gl=US&ceid=US:en"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=5) as response:
             xml_data = response.read()
         root = ET.fromstring(xml_data)
-        for item in root.findall('.//item'):
+        
+        items = root.findall('.//item')
+        if not items:
+            return None, None, 0, 0
+            
+        count_24h = 0
+        most_recent_title = None
+        most_recent_link = None
+        most_recent_days = 0
+        
+        now = datetime.now(timezone.utc)
+        
+        for i, item in enumerate(items):
             title = item.find('title').text
-            if title and matches_target(title, ticker, company_name):
-                link = item.find('link').text
-                pubDate = item.find('pubDate').text
-                try:
-                    dt = datetime.strptime(pubDate, '%a, %d %b %Y %H:%M:%S %Z')
-                    days_ago = max(0, (datetime.utcnow() - dt).days)
-                except Exception:
-                    days_ago = 0
-                return title.rsplit(' - ', 1)[0], link, days_ago
+            link = item.find('link').text
+            pubDate = item.find('pubDate').text
+            
+            try:
+                # Safely parse the RSS date format
+                dt = parsedate_to_datetime(pubDate)
+                delta = now - dt
+                days_ago = max(0, delta.days)
+                hours_ago = delta.total_seconds() / 3600
+            except Exception:
+                days_ago = 0
+                hours_ago = 48 # Assume older if parsing fails
+                
+            if hours_ago <= 24:
+                count_24h += 1
+                
+            # The first item in the RSS feed is the most recent
+            if i == 0: 
+                most_recent_title = title.rsplit(' - ', 1)[0] if title else ""
+                most_recent_link = link
+                most_recent_days = days_ago
+                
+        return most_recent_title, most_recent_link, most_recent_days, count_24h
+        
     except Exception:
-        pass
+        return None, None, 0, 0
 
-    return None, None, None
-
-def analyze_sentiment(ticker, company_name, nlp_pipe):
-    if not nlp_pipe: return "No FinBERT ⚠️", None
-    title, link, days_ago = get_latest_news(ticker, company_name)
-    if not title: return "No Recent Match ⚪", None
+def analyze_sentiment(ticker, nlp_pipe):
+    title, link, days_ago, count_24h = get_latest_news(ticker)
+    
+    if not title: 
+        return "No News ⚪", None, 0
+        
+    if not nlp_pipe: 
+        day_str = "Today" if days_ago == 0 else f"{days_ago}d ago"
+        return f"Found 📰 ({day_str})", link, count_24h
+        
     try:
         res = nlp_pipe(title)[0]
         label = res['label']
@@ -82,9 +100,9 @@ def analyze_sentiment(ticker, company_name, nlp_pipe):
         elif label == 'negative': icon = "🔴"
         else: icon = "🟡"
         day_str = "Today" if days_ago == 0 else f"{days_ago}d ago"
-        return f"{label.capitalize()} {icon} ({day_str})", link
+        return f"{label.capitalize()} {icon} ({day_str})", link, count_24h
     except Exception:
-        return "Error ⚪", None
+        return "Error ⚪", link, count_24h
 
 # ==========================================
 # 2. MARKET DATA UNIVERSE
@@ -386,7 +404,6 @@ portfolio_df = pd.read_csv(PORTFOLIO_FILE)
 if not portfolio_df.empty:
     st.sidebar.dataframe(portfolio_df, hide_index=True, use_container_width=True)
 
-# Expander for Adding/Updating
 with st.sidebar.expander("➕ Add / Update Ticker"):
     with st.form("add_portfolio_form", clear_on_submit=True):
         new_ticker = st.text_input("Ticker").upper().strip()
@@ -401,7 +418,6 @@ with st.sidebar.expander("➕ Add / Update Ticker"):
                 portfolio_df.to_csv(PORTFOLIO_FILE, index=False)
                 st.rerun()
 
-# Expander for Removing
 with st.sidebar.expander("➖ Remove Ticker"):
     with st.form("remove_portfolio_form", clear_on_submit=True):
         remove_ticker = st.text_input("Ticker to Remove").upper().strip()
@@ -466,7 +482,7 @@ if st.sidebar.button("🚀 Run Live Scan"):
 
                 live_data['My_Entry'] = live_data['Ticker'].map(manual_positions)
                 
-                # --- NEW ACTION LOGIC ---
+                # Action Logic
                 def determine_action(row):
                     is_owned = pd.notna(row['My_Entry']) and row['My_Entry'] > 0
                     is_buy_signal = row['Close'] >= (row['Entry_Advanced'] * 0.99)
@@ -486,19 +502,21 @@ if st.sidebar.button("🚀 Run Live Scan"):
 
                 master = live_data.sort_values('Average_Rank', ascending=True).head(30).copy()
                 
-                # FinBERT Loop
+                # Exact Ticker News Loop
                 nlp = load_finbert()
-                sentiments, links = [], []
-                sentiment_bar = st.progress(0, text="Analyzing Focused News Sentiment...")
+                sentiments, links, counts_24h = [], [], []
+                sentiment_bar = st.progress(0, text="Fetching specific ticker news...")
                 
                 for idx, row in master.iterrows():
-                    sent, link = analyze_sentiment(row['Ticker'], row['Company'], nlp)
+                    sent, link, c_24 = analyze_sentiment(row['Ticker'], nlp)
                     sentiments.append(sent)
                     links.append(link)
-                    sentiment_bar.progress(len(sentiments) / len(master), text=f"Scanning News for {row['Ticker']}...")
+                    counts_24h.append(c_24)
+                    sentiment_bar.progress(len(sentiments) / len(master), text=f"Checking Google News for {row['Ticker']}...")
                 
                 master['Sentiment'] = sentiments
                 master['News_Link'] = links
+                master['News_24h'] = counts_24h
                 sentiment_bar.empty()
 
                 st.success("Scan complete.")
@@ -512,7 +530,7 @@ if st.sidebar.button("🚀 Run Live Scan"):
                     
                     master_cols = [
                         'Ticker', 'Action', 'My_Entry', 'Average_Rank', 'Hybrid_Score', 
-                        'Vol_Flag', 'Sentiment', 'News_Link', 'Setup_Type', 
+                        'Vol_Flag', 'News_24h', 'Sentiment', 'News_Link', 'Setup_Type', 
                         'Entry_Simple', 'Entry_Advanced', 'Close', 
                         'Stop_Loss', 'rsi', 'rvol'
                     ]
@@ -522,7 +540,8 @@ if st.sidebar.button("🚀 Run Live Scan"):
                         use_container_width=True, 
                         hide_index=True,
                         column_config={
-                            "News_Link": st.column_config.LinkColumn("Article Link", display_text="Open News")
+                            "News_Link": st.column_config.LinkColumn("Article Link", display_text="Open News"),
+                            "News_24h": st.column_config.NumberColumn("24h News Vol")
                         }
                     )
                     
