@@ -391,45 +391,30 @@ market_options = [
 ]
 selected_markets = st.sidebar.multiselect("Select Markets to Scan:", market_options, default=["NASDAQ 100"])
 
-# --- PERSISTENT PORTFOLIO MANAGER ---
+# --- GOOGLE SHEETS PORTFOLIO MANAGER ---
 st.sidebar.markdown("---")
-st.sidebar.subheader("💼 My Portfolio")
-PORTFOLIO_FILE = "portfolio.csv"
+st.sidebar.subheader("💼 My Portfolio (Live)")
 
-if not os.path.exists(PORTFOLIO_FILE):
-    pd.DataFrame(columns=["Ticker", "Entry_Price"]).to_csv(PORTFOLIO_FILE, index=False)
+# PASTE YOUR GOOGLE SHEET ID HERE:
+SHEET_ID = "YOUR_SHEET_ID_HERE" 
+SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
 
-portfolio_df = pd.read_csv(PORTFOLIO_FILE)
-
-if not portfolio_df.empty:
-    st.sidebar.dataframe(portfolio_df, hide_index=True, use_container_width=True)
-
-with st.sidebar.expander("➕ Add / Update Ticker"):
-    with st.form("add_portfolio_form", clear_on_submit=True):
-        new_ticker = st.text_input("Ticker").upper().strip()
-        new_entry = st.number_input("Entry Price (0 to just watch)", min_value=0.0, step=0.01)
-        if st.form_submit_button("Save Ticker"):
-            if new_ticker:
-                if new_ticker in portfolio_df["Ticker"].values:
-                    portfolio_df.loc[portfolio_df["Ticker"] == new_ticker, "Entry_Price"] = new_entry if new_entry > 0 else np.nan
-                else:
-                    new_row = pd.DataFrame([{"Ticker": new_ticker, "Entry_Price": new_entry if new_entry > 0 else np.nan}])
-                    portfolio_df = pd.concat([portfolio_df, new_row], ignore_index=True)
-                portfolio_df.to_csv(PORTFOLIO_FILE, index=False)
-                st.rerun()
-
-with st.sidebar.expander("➖ Remove Ticker"):
-    with st.form("remove_portfolio_form", clear_on_submit=True):
-        remove_ticker = st.text_input("Ticker to Remove").upper().strip()
-        if st.form_submit_button("Delete Ticker"):
-            if remove_ticker and remove_ticker in portfolio_df["Ticker"].values:
-                portfolio_df = portfolio_df[portfolio_df["Ticker"] != remove_ticker]
-                portfolio_df.to_csv(PORTFOLIO_FILE, index=False)
-                st.rerun()
-
-if st.sidebar.button("Clear Saved Portfolio"):
-    pd.DataFrame(columns=["Ticker", "Entry_Price"]).to_csv(PORTFOLIO_FILE, index=False)
-    st.rerun()
+try:
+    # Read the live Google Sheet
+    portfolio_df = pd.read_csv(SHEET_URL)
+    
+    # Clean up the data just in case of typos in the sheet
+    portfolio_df.columns = ["Ticker", "Entry_Price"]
+    portfolio_df['Ticker'] = portfolio_df['Ticker'].astype(str).str.upper().str.strip()
+    portfolio_df['Entry_Price'] = pd.to_numeric(portfolio_df['Entry_Price'], errors='coerce')
+    portfolio_df = portfolio_df.dropna(subset=['Ticker']) # Remove blank rows
+    
+    if not portfolio_df.empty:
+        st.sidebar.dataframe(portfolio_df, hide_index=True, use_container_width=True)
+        st.sidebar.success("✅ Synced with Google Sheets")
+except Exception as e:
+    portfolio_df = pd.DataFrame(columns=["Ticker", "Entry_Price"])
+    st.sidebar.warning("⚠️ Could not read Google Sheet. Check your Sheet ID and sharing settings.")
 
 # --- RUN SCANNER ---
 if st.sidebar.button("🚀 Run Live Scan"):
