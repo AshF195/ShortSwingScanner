@@ -9,7 +9,6 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-import os
 
 # Try to import FinBERT libraries
 try:
@@ -21,7 +20,7 @@ except ImportError:
 warnings.filterwarnings('ignore')
 
 # ==========================================
-# 1. FINBERT NLP & EXACT GOOGLE NEWS SETUP (Cached)
+# 1. FINBERT NLP & EXACT GOOGLE NEWS SETUP
 # ==========================================
 @st.cache_resource
 def load_finbert():
@@ -33,7 +32,6 @@ def get_latest_news(ticker):
     Searches Google News strictly by ticker. 
     Counts articles in last 24h, and returns the most recent article.
     """
-    # URL encode the ticker in case of special characters
     safe_ticker = urllib.parse.quote(ticker)
     url = f"https://news.google.com/rss/search?q={safe_ticker}&hl=en-US&gl=US&ceid=US:en"
     
@@ -60,19 +58,17 @@ def get_latest_news(ticker):
             pubDate = item.find('pubDate').text
             
             try:
-                # Safely parse the RSS date format
                 dt = parsedate_to_datetime(pubDate)
                 delta = now - dt
                 days_ago = max(0, delta.days)
                 hours_ago = delta.total_seconds() / 3600
             except Exception:
                 days_ago = 0
-                hours_ago = 48 # Assume older if parsing fails
+                hours_ago = 48 
                 
             if hours_ago <= 24:
                 count_24h += 1
                 
-            # The first item in the RSS feed is the most recent
             if i == 0: 
                 most_recent_title = title.rsplit(' - ', 1)[0] if title else ""
                 most_recent_link = link
@@ -385,6 +381,7 @@ st.markdown("Scan major markets or track your portfolio for buy/sell actions.")
 
 st.sidebar.header("Scanner Settings")
 market_options = [
+    "My Portfolio",
     "S&P 500", "S&P 400 (MidCap)", "S&P 600 (SmallCap)", 
     "NASDAQ 100", "Dow Jones", "FTSE 100", "FTSE 250", 
     "CAC 40", "DAX 40", "GETTEX (Manual)"
@@ -395,26 +392,32 @@ selected_markets = st.sidebar.multiselect("Select Markets to Scan:", market_opti
 st.sidebar.markdown("---")
 st.sidebar.subheader("💼 My Portfolio (Live)")
 
-# Using the correct export URL format:
 SHEET_ID = "1kHpD-bTPZz4etplOAVKQlI-9egmpMHm0cIGVybPzPZ8"
 SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
 
 try:
-    # Read the live Google Sheet
     portfolio_df = pd.read_csv(SHEET_URL)
     
-    # Clean up the data just in case of typos in the sheet
-    portfolio_df.columns = ["Ticker", "Entry_Price"]
+    if len(portfolio_df.columns) >= 2:
+        portfolio_df = portfolio_df.iloc[:, :2] 
+        portfolio_df.columns = ["Ticker", "Entry_Price"]
+    else:
+        portfolio_df.columns = ["Ticker"]
+        portfolio_df["Entry_Price"] = np.nan
+        
     portfolio_df['Ticker'] = portfolio_df['Ticker'].astype(str).str.upper().str.strip()
     portfolio_df['Entry_Price'] = pd.to_numeric(portfolio_df['Entry_Price'], errors='coerce')
-    portfolio_df = portfolio_df.dropna(subset=['Ticker']) # Remove blank rows
+    
+    portfolio_df = portfolio_df[portfolio_df['Ticker'] != 'NAN'] 
+    portfolio_df = portfolio_df.dropna(subset=['Ticker']) 
     
     if not portfolio_df.empty:
         st.sidebar.dataframe(portfolio_df, hide_index=True, use_container_width=True)
         st.sidebar.success("✅ Synced with Google Sheets")
+
 except Exception as e:
     portfolio_df = pd.DataFrame(columns=["Ticker", "Entry_Price"])
-    st.sidebar.warning("⚠️ Could not read Google Sheet. Check your Sheet ID and sharing settings.")
+    st.sidebar.warning("⚠️ Could not read Google Sheet.")
 
 # --- RUN SCANNER ---
 if st.sidebar.button("🚀 Run Live Scan"):
@@ -424,8 +427,8 @@ if st.sidebar.button("🚀 Run Live Scan"):
         for _, row in portfolio_df.iterrows():
             manual_positions[row['Ticker']] = row['Entry_Price'] if pd.notna(row['Entry_Price']) else None
 
-    if not selected_markets and not manual_positions:
-        st.warning("Please select at least one market or add a ticker to your portfolio.")
+    if not selected_markets:
+        st.warning("Please select at least one market to scan.")
     else:
         with st.spinner("Loading tickers & fetching market data..."):
             
@@ -433,11 +436,13 @@ if st.sidebar.button("🚀 Run Live Scan"):
             ticker_map = {}
             
             if selected_markets:
-                csv_tickers, csv_map = get_tickers_and_names(selected_markets)
-                tickers.extend(csv_tickers)
-                ticker_map.update(csv_map)
+                csv_markets = [m for m in selected_markets if m != "My Portfolio"]
+                if csv_markets:
+                    csv_tickers, csv_map = get_tickers_and_names(csv_markets)
+                    tickers.extend(csv_tickers)
+                    ticker_map.update(csv_map)
                 
-            if manual_positions:
+            if "My Portfolio" in selected_markets and manual_positions:
                 for t in manual_positions.keys():
                     if t not in tickers:
                         tickers.append(t)
