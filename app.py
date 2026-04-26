@@ -397,7 +397,7 @@ st.sidebar.subheader("💼 My Portfolio (Live)")
 
 # PASTE YOUR GOOGLE SHEET ID HERE:
 SHEET_ID = "YOUR_SHEET_ID_HERE" 
-SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
+SHEET_URL = f"https://docs.google.com/spreadsheets/d/1kHpD-bTPZz4etplOAVKQlI-9egmpMHm0cIGVybPzPZ8/edit?gid=0#gid=0"
 
 try:
     # Read the live Google Sheet
