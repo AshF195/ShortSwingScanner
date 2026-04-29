@@ -259,21 +259,21 @@ def score_chatgpt(df):
     return s
 
 def score_grok(df):
-    def score_Grok(df):
     s = pd.Series(0.0, index=df.index, dtype=float)
 
     bb_score = np.clip((0.18 - df['bb_width']) / 0.18 * 40, 0, 40)
     s += bb_score
 
-    expansion = (df['High'] - df['Low']) / df['atr_14']
+    expansion = (df['High'] - df['Low']) / (df['atr_14'] + 1e-9)
     vol_score = np.clip(expansion * 7.0, 0, 23)
     vol_score = np.where(df['bb_width'] < 0.13, vol_score * 1.3, vol_score)
     s += vol_score
 
-    breakout_score = np.clip((df['Close'] / df['high_50d'] - 0.965) * 85, 0, 18)
+    breakout_score = np.clip((df['Close'] / (df['high_50d'] + 1e-9) - 0.965) * 85, 0, 18)
     s += breakout_score
 
-    rvol_score = np.clip(np.log1p(df['rvol'] - 0.5) * 9.5, 0, 18)
+    rvol_safe = np.maximum(0, df['rvol'] - 0.5)
+    rvol_score = np.clip(np.log1p(rvol_safe) * 9.5, 0, 18)
     s += rvol_score
 
     mom_score = np.clip(df['ret_5d'] * 220, -12, 15)
