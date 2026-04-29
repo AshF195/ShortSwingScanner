@@ -259,31 +259,32 @@ def score_chatgpt(df):
     return s
 
 def score_grok(df):
+    def score_Grok(df):
     s = pd.Series(0.0, index=df.index, dtype=float)
-    
-    bb_score = np.clip((0.15 - df['bb_width']) / 0.15 * 38, 0, 38)
+
+    bb_score = np.clip((0.18 - df['bb_width']) / 0.18 * 40, 0, 40)
     s += bb_score
-    
-    expansion = (df['High'] - df['Low']) / (df['atr_14'] + 1e-9)
-    vol_score = np.clip(expansion * 6.5, 0, 22)
-    vol_score = np.where(df['bb_width'] < 0.12, vol_score * 1.25, vol_score)
+
+    expansion = (df['High'] - df['Low']) / df['atr_14']
+    vol_score = np.clip(expansion * 7.0, 0, 23)
+    vol_score = np.where(df['bb_width'] < 0.13, vol_score * 1.3, vol_score)
     s += vol_score
-    
-    breakout_score = np.clip((df['Close'] / (df['high_50d'] + 1e-9) - 0.98) * 120, 0, 20)
+
+    breakout_score = np.clip((df['Close'] / df['high_50d'] - 0.965) * 85, 0, 18)
     s += breakout_score
-    
-    rvol_safe = np.maximum(0, df['rvol'] - 0.8)
-    rvol_score = np.clip(np.log1p(rvol_safe) * 11, 0, 19)
+
+    rvol_score = np.clip(np.log1p(df['rvol'] - 0.5) * 9.5, 0, 18)
     s += rvol_score
-    
-    mom_score = np.clip(df['ret_5d'] * 280, -8, 16)
+
+    mom_score = np.clip(df['ret_5d'] * 220, -12, 15)
     s += mom_score
-    
-    rsi_score = 10 * np.exp(-((df['rsi'] - 58) / 18)**2) - 4
-    s += np.clip(rsi_score, -6, 10)
-    
-    s = np.clip(s, 0, 105)
-    
+
+    rsi_score = 9 * np.exp(-((df['rsi'] - 55) / 20)**2)
+    rsi_penalty = np.where(df['rsi'] < 35, (35 - df['rsi']) * 0.25, 0)
+    s += rsi_score - rsi_penalty
+
+    s = np.clip(s, 0, 108)
+
     return s
 
 def score_gemini(df):
