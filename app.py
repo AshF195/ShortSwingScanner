@@ -393,7 +393,7 @@ market_options = [
     "My Portfolio",
     "S&P 500", "S&P 400 (MidCap)", "S&P 600 (SmallCap)", 
     "NASDAQ 100", "Dow Jones", "FTSE 100", "FTSE 250", 
-    "CAC 40", "DAX 40", "GETTEX (Manual)"
+    "CAC 40", "DAX 40", "AEX 25", "IBEX 35", "FTSE MIB 40",
 ]
 selected_markets = st.sidebar.multiselect("Select Markets to Scan:", market_options, default=["NASDAQ 100"])
 
