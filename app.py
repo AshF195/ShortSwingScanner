@@ -110,7 +110,7 @@ def get_tickers_and_names(markets):
         "S&P 500": ("sp500.csv", ""), "S&P 400 (MidCap)": ("sp400.csv", ""), "S&P 600 (SmallCap)": ("sp600.csv", ""),
         "NASDAQ 100": ("nasdaq100.csv", ""), "Dow Jones": ("dow_jones.csv", ""), 
         "FTSE 100": ("ftse100.csv", ".L"), "FTSE 250": ("ftse250.csv", ".L"), 
-        "CAC 40": ("cac40.csv", ".PA"), "DAX 40": ("dax.csv", ".DE"), "GETTEX (Manual)": ("gettex.csv", ".DE")
+        "CAC 40": ("cac40.csv", ".PA"), "DAX 40": ("dax.csv", ".DE"), "GETTEX (Manual)": ("aex25.csv", ".AS")
     }
     for market in markets:
         if market_info := file_map.get(market):
