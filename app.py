@@ -109,7 +109,7 @@ def get_tickers_and_names(markets):
     file_map = {
         "S&P 500": ("sp500.csv", ""), "S&P 400 (MidCap)": ("sp400.csv", ""), "S&P 600 (SmallCap)": ("sp600.csv", ""),
         "NASDAQ 100": ("nasdaq100.csv", ""), "Dow Jones": ("dow_jones.csv", ""), 
-        "FTSE 100": ("ftse100.csv", ".L"), "FTSE 250": ("ftse250.csv", ".L"), 
+        "FTSE 100": ("ftse100.csv", ".L"), "FTSE 250": ("ftse250.csv", ".L"), "FTSE Small Cap": ("ftsesmallcap.csv", ".L"),
         "CAC 40": ("cac40.csv", ".PA"), "DAX 40": ("dax.csv", ".DE"), "AEX 25": ("aex25.csv", ".AS"), "IBEX 35": ("ibex35.csv", ".MC"), "FTSE MIB 40": ("ftsemib40.csv", ".MI")
     }
     for market in markets:
@@ -392,7 +392,7 @@ st.sidebar.header("Scanner Settings")
 market_options = [
     "My Portfolio",
     "S&P 500", "S&P 400 (MidCap)", "S&P 600 (SmallCap)", 
-    "NASDAQ 100", "Dow Jones", "FTSE 100", "FTSE 250", 
+    "NASDAQ 100", "Dow Jones", "FTSE 100", "FTSE 250", "FTSE Small Cap", 
     "CAC 40", "DAX 40", "AEX 25", "IBEX 35", "FTSE MIB 40",
 ]
 selected_markets = st.sidebar.multiselect("Select Markets to Scan:", market_options, default=["NASDAQ 100"])
